@@ -16,3 +16,6 @@
 [submodule "3rd_party/preprocess"]
 	path = 3rd_party/preprocess
 	url = https://github.com/kpu/preprocess.git
+[submodule "3rd_party/domain_clusters"]
+	path = 3rd_party/domain_clusters
+	url = https://github.com/TartuNLP/domain_clusters
