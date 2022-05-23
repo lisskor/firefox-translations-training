@@ -191,6 +191,16 @@ if fine_tune_to_corpus:
         results.extend(expand(f'{eval_corpus_ft_teacher_ens_dir}/{{dataset}}/{{eval_dataset}}.metrics',
             eval_dataset=all_eval_datasets, dataset=train_datasets))
 
+cluster_data_dir = f"{data_dir}/clusters"
+embedded_source = f"{cluster_data_dir}/embedded_source.npz"
+# TODO: a better way to do this
+vocab_file_path = vocab_path[:-3] + "vocab"
+hf_model_dir = f"{models_dir}/huggingface-teacher"
+hf_conversion_outputs = ["config.json", "pytorch_model.bin", "special_tokens_map.json",
+                         "tokenizer_config.json", "marian_original_config.json",
+                         "source.spm", "target.spm", "vocab.json"]
+results.append(embedded_source)
+
 # bicleaner
 
 bicleaner_type = packs.find(src, trg)
@@ -675,6 +685,46 @@ if augment_corpus:
         shell: '''bash pipeline/train/train.sh \
                     teacher train {src} {trg} "{params.prefix_train}" "{params.prefix_test}" "{params.dir}" \
                     "{input.vocab}" --pretrained-model "{input.model}" {params.args} >> {log} 2>&1'''
+
+rule convert_teacher_to_hf:
+    message: "Convert teacher to HuggingFace format"
+    log: f"{log_dir}/convert_teacher{{ens}}_to_hf.log"
+    conda: "envs/huggingface.yml"
+    threads: 4
+    input:
+        general_teacher=f'{final_teacher_dir}{{ens}}/{best_model}',
+        spm_vocab=vocab_path,
+        vocab=vocab_file_path
+    output: expand(f"{hf_model_dir}{{ens}}/{{file}}", file=hf_conversion_outputs, allow_missing=True)
+    params:
+        dest_dir=f'{hf_model_dir}{{ens}}',
+        decoder_config=f'{final_teacher_dir}{{ens}}/{best_model}.decoder.yml'
+    shell: '''python {third_party_dir}/domain_clusters/convert_marian_bergamot_to_pytorch_.py \
+                --npz-model-path "{input.general_teacher}" --yml-decoder-path "{params.decoder_config}" \
+                --spm-model-path "{input.spm_vocab}" --vocab-path "{input.vocab}" --dest-dir "{params.dest_dir}" >> {log} 2>&1'''
+
+# TODO: split corpus into parts, same as for forward-translation
+# TODO: do not hardcode teacher id
+rule extract_sentence_representations:
+    message: "Extract sentence representations for clustering"
+    log: f"{log_dir}/extract_reprs_teacher0.log"
+    conda: "envs/huggingface.yml"
+    threads: 2
+    resources: gpu=1
+    input:
+        input_data=clean_corpus_src,
+        hf_model=f"{hf_model_dir}0/pytorch_model.bin"
+    output: f"{embedded_source}"
+    params:
+        hf_teacher_dir=f"{hf_model_dir}0",
+        layer_num=4,
+        batch_size=1000,
+        temp_txt_file=f'{hf_model_dir}0/corpus.txt',
+        decoder_config=f'{final_teacher_dir}0/{best_model}.decoder.yml'
+    shell: '''bash pipeline/clusters/extract_sentence_representations.sh \
+                "{input.input_data}" "{params.hf_teacher_dir}" "{params.batch_size}" \
+                "{params.layer_num}" "{output}" >> {log} 2>&1'''
+
 
 if fine_tune_to_corpus:
     ### fine-tune teacher to corpora
