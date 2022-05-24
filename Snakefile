@@ -694,14 +694,14 @@ rule convert_teacher_to_hf:
     input:
         general_teacher=f'{final_teacher_dir}{{ens}}/{best_model}',
         spm_vocab=vocab_path,
-        vocab=vocab_file_path
     output: expand(f"{hf_model_dir}{{ens}}/{{file}}", file=hf_conversion_outputs, allow_missing=True)
     params:
         dest_dir=f'{hf_model_dir}{{ens}}',
-        decoder_config=f'{final_teacher_dir}{{ens}}/{best_model}.decoder.yml'
+        decoder_config=f'{final_teacher_dir}{{ens}}/{best_model}.decoder.yml',
+        vocab=vocab_file_path
     shell: '''python {third_party_dir}/domain_clusters/convert_marian_bergamot_to_pytorch_.py \
                 --npz-model-path "{input.general_teacher}" --yml-decoder-path "{params.decoder_config}" \
-                --spm-model-path "{input.spm_vocab}" --vocab-path "{input.vocab}" --dest-dir "{params.dest_dir}" >> {log} 2>&1'''
+                --spm-model-path "{input.spm_vocab}" --vocab-path "{params.vocab}" --dest-dir "{params.dest_dir}" >> {log} 2>&1'''
 
 # TODO: split corpus into parts, same as for forward-translation
 # TODO: do not hardcode teacher id
