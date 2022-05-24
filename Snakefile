@@ -193,13 +193,16 @@ if fine_tune_to_corpus:
 
 cluster_data_dir = f"{data_dir}/clusters"
 embedded_source = f"{cluster_data_dir}/embedded_source.npz"
+cluster_labels = f"{cluster_data_dir}/cluster_labels.txt"
+cluster_models_dir = f"{models_dir}/clustering"
 # TODO: a better way to do this
 vocab_file_path = vocab_path[:-3] + "vocab"
-hf_model_dir = f"{models_dir}/huggingface-teacher"
+hf_model_dir = f"{cluster_models_dir}/huggingface-teacher"
+kmeans_model = f"{cluster_models_dir}/kmeans_model.dump"
 hf_conversion_outputs = ["config.json", "pytorch_model.bin", "special_tokens_map.json",
                          "tokenizer_config.json", "marian_original_config.json",
                          "source.spm", "target.spm", "vocab.json"]
-results.append(embedded_source)
+results.append(cluster_labels)
 
 # bicleaner
 
@@ -719,11 +722,33 @@ rule extract_sentence_representations:
         hf_teacher_dir=f"{hf_model_dir}0",
         layer_num=4,
         batch_size=1000,
-        temp_txt_file=f'{hf_model_dir}0/corpus.txt',
-        decoder_config=f'{final_teacher_dir}0/{best_model}.decoder.yml'
     shell: '''bash pipeline/clusters/extract_sentence_representations.sh \
                 "{input.input_data}" "{params.hf_teacher_dir}" "{params.batch_size}" \
                 "{params.layer_num}" "{output}" >> {log} 2>&1'''
+
+rule corpus_clustering:
+    message: "Extract sentence representations for clustering"
+    log: f"{log_dir}/cluster_corpus_teacher0.log"
+    conda: "envs/huggingface.yml"
+    threads: 2
+    resources: gpu=1
+    input:
+        embeddings=f"{embedded_source}",
+    output:
+        model=kmeans_model,
+        labels=cluster_labels
+    params:
+        num_clusters=4,
+        num_initializations=10,
+        max_iterations=300,
+        batch_size=1024,
+        max_no_improvement=10
+    shell: '''python {third_party_dir}/domain_clusters/run_clustering.py \
+                --embedded-dataset-path {input.embeddings} --out-file-model {output.model} \
+                --out-file-labels {output.labels} --n-clusters {params.num_clusters} \
+                --n_init {params.num_initializations} --max-iter {params.max_iterations} \
+                --batch-size {params.batch_size} --max-no-improvement-size {params.max_no_improvement} \
+                --verbose 1 --random-state 42 >> {log} 2>&1'''
 
 
 if fine_tune_to_corpus:
