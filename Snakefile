@@ -159,15 +159,18 @@ if config['gpus']:
 
 ### workflow options
 
-results = [f'{exported_dir}/model.{src}{trg}.intgemm.alphas.bin.gz',
-           f'{exported_dir}/lex.50.50.{src}{trg}.s2t.bin.gz',
-           f'{exported_dir}/vocab.{src}{trg}.spm.gz',
-           f'{experiment_dir}/config.yml',
+results = [f'{experiment_dir}/config.yml',
            *expand(f'{eval_res_dir}/teacher-base{{ens}}/{{dataset}}.metrics',ens=ensemble, dataset=all_eval_datasets),
-           *expand(f'{eval_student_dir}/{{dataset}}.metrics', dataset=all_eval_datasets),
-           *expand(f'{eval_student_finetuned_dir}/{{dataset}}.metrics', dataset=all_eval_datasets),
-           *expand(f'{eval_speed_dir}/{{dataset}}.metrics', dataset=all_eval_datasets)
            ]
+# results = [f'{exported_dir}/model.{src}{trg}.intgemm.alphas.bin.gz',
+#            f'{exported_dir}/lex.50.50.{src}{trg}.s2t.bin.gz',
+#            f'{exported_dir}/vocab.{src}{trg}.spm.gz',
+#            f'{experiment_dir}/config.yml',
+#            *expand(f'{eval_res_dir}/teacher-base{{ens}}/{{dataset}}.metrics',ens=ensemble, dataset=all_eval_datasets),
+#            *expand(f'{eval_student_dir}/{{dataset}}.metrics', dataset=all_eval_datasets),
+#            *expand(f'{eval_student_finetuned_dir}/{{dataset}}.metrics', dataset=all_eval_datasets),
+#            *expand(f'{eval_speed_dir}/{{dataset}}.metrics', dataset=all_eval_datasets)
+#            ]
 
 if len(ensemble) > 1:
     results.extend(expand(f'{eval_teacher_ens_dir}/{{dataset}}.metrics', dataset=all_eval_datasets))
@@ -191,10 +194,13 @@ if fine_tune_to_corpus:
         results.extend(expand(f'{eval_corpus_ft_teacher_ens_dir}/{{dataset}}/{{eval_dataset}}.metrics',
             eval_dataset=all_eval_datasets, dataset=train_datasets))
 
+# TODO: add this to config
+num_clusters = 4
 cluster_data_dir = f"{data_dir}/clusters"
 embedded_source = f"{cluster_data_dir}/embedded_source.npz"
 cluster_labels = f"{cluster_data_dir}/cluster_labels.txt"
 cluster_models_dir = f"{models_dir}/clustering"
+clustered_train = f"{cluster_data_dir}/corpus_cluster"
 # TODO: a better way to do this
 vocab_file_path = vocab_path[:-3] + "vocab"
 hf_model_dir = f"{cluster_models_dir}/huggingface-teacher"
@@ -202,7 +208,10 @@ kmeans_model = f"{cluster_models_dir}/kmeans_model.dump"
 hf_conversion_outputs = ["config.json", "pytorch_model.bin", "special_tokens_map.json",
                          "tokenizer_config.json", "marian_original_config.json",
                          "source.spm", "target.spm", "vocab.json"]
-results.append(cluster_labels)
+# results.append(cluster_labels)
+results.extend(expand(f"{clustered_train}{{cluster_id}}.{{lang}}.gz",
+        cluster_id=list(range(num_clusters)),
+        lang=[src, trg]))
 
 # bicleaner
 
@@ -721,7 +730,7 @@ rule extract_sentence_representations:
     params:
         hf_teacher_dir=f"{hf_model_dir}0",
         layer_num=4,
-        batch_size=1000,
+        batch_size=1000
     shell: '''bash pipeline/clusters/extract_sentence_representations.sh \
                 "{input.input_data}" "{params.hf_teacher_dir}" "{params.batch_size}" \
                 "{params.layer_num}" "{output}" >> {log} 2>&1'''
@@ -738,17 +747,37 @@ rule corpus_clustering:
         model=kmeans_model,
         labels=cluster_labels
     params:
-        num_clusters=4,
+        num_clusters=num_clusters,
         num_initializations=10,
         max_iterations=300,
         batch_size=1024,
         max_no_improvement=10
     shell: '''python {third_party_dir}/domain_clusters/run_clustering.py \
-                --embedded-dataset-path {input.embeddings} --out-file-model {output.model} \
-                --out-file-labels {output.labels} --n-clusters {params.num_clusters} \
-                --n_init {params.num_initializations} --max-iter {params.max_iterations} \
-                --batch-size {params.batch_size} --max-no-improvement-size {params.max_no_improvement} \
-                --verbose 1 --random-state 42 >> {log} 2>&1'''
+                    --embedded-dataset-path {input.embeddings} --out-file-model {output.model} \
+                    --out-file-labels {output.labels} --n-clusters {params.num_clusters} \
+                    --n_init {params.num_initializations} --max-iter {params.max_iterations} \
+                    --batch-size {params.batch_size} --max-no-improvement-size {params.max_no_improvement} \
+                    --verbose 1 --random-state 42 >> {log} 2>&1'''
+
+rule split_train_into_clusters:
+    message: "Split training corpus into discovered clusters"
+    log: f"{log_dir}/split_train_into_clusters.log"
+    conda: "envs/base.yml"
+    threads: 4
+    input:
+        labels=cluster_labels,
+        input_src=clean_corpus_src,
+        input_trg=clean_corpus_trg
+    output:
+        expand(f"{clustered_train}{{cluster_id}}.{{lang}}.gz",
+                cluster_id=list(range(num_clusters)), lang=[src, trg])
+    params:
+        input_prefix=clean_corpus_prefix,
+        num_clusters=num_clusters,
+        cluster_dir=cluster_data_dir
+    shell: '''bash pipeline/clusters/separate_clusters.sh \
+                "{params.input_prefix}" "{input.labels}" "{params.num_clusters}" \
+                "{params.cluster_dir}" >> {log} 2>&1'''
 
 
 if fine_tune_to_corpus:
