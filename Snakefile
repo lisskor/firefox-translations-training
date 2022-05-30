@@ -159,18 +159,15 @@ if config['gpus']:
 
 ### workflow options
 
-results = [f'{experiment_dir}/config.yml',
+results = [f'{exported_dir}/model.{src}{trg}.intgemm.alphas.bin.gz',
+           f'{exported_dir}/lex.50.50.{src}{trg}.s2t.bin.gz',
+           f'{exported_dir}/vocab.{src}{trg}.spm.gz',
+           f'{experiment_dir}/config.yml',
            *expand(f'{eval_res_dir}/teacher-base{{ens}}/{{dataset}}.metrics',ens=ensemble, dataset=all_eval_datasets),
+           *expand(f'{eval_student_dir}/{{dataset}}.metrics', dataset=all_eval_datasets),
+           *expand(f'{eval_student_finetuned_dir}/{{dataset}}.metrics', dataset=all_eval_datasets),
+           *expand(f'{eval_speed_dir}/{{dataset}}.metrics', dataset=all_eval_datasets)
            ]
-# results = [f'{exported_dir}/model.{src}{trg}.intgemm.alphas.bin.gz',
-#            f'{exported_dir}/lex.50.50.{src}{trg}.s2t.bin.gz',
-#            f'{exported_dir}/vocab.{src}{trg}.spm.gz',
-#            f'{experiment_dir}/config.yml',
-#            *expand(f'{eval_res_dir}/teacher-base{{ens}}/{{dataset}}.metrics',ens=ensemble, dataset=all_eval_datasets),
-#            *expand(f'{eval_student_dir}/{{dataset}}.metrics', dataset=all_eval_datasets),
-#            *expand(f'{eval_student_finetuned_dir}/{{dataset}}.metrics', dataset=all_eval_datasets),
-#            *expand(f'{eval_speed_dir}/{{dataset}}.metrics', dataset=all_eval_datasets)
-#            ]
 
 if len(ensemble) > 1:
     results.extend(expand(f'{eval_teacher_ens_dir}/{{dataset}}.metrics', dataset=all_eval_datasets))
