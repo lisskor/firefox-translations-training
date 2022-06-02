@@ -9,6 +9,14 @@ set -euo pipefail
 test -v SRC
 test -v TRG
 
+# https://stackoverflow.com/questions/41962359/shuffling-numbers-in-bash-using-seed
+# Deterministic shuffling
+get_seeded_random()
+{
+  seed="$1"
+  openssl enc -aes-256-ctr -pass pass:"$seed" -nosalt \
+    </dev/zero 2>/dev/null
+}
 
 corpus_src=$1
 corpus_trg=$2
@@ -22,7 +30,9 @@ mkdir -p "${tmp}"
 
 # paste and shuffle
 
-paste <(pigz -dc "${corpus_src}") <(pigz -dc "${corpus_trg}") | shuf | pigz > "${tmp}/corpus.shuf.both.gz"
+paste <(pigz -dc "${corpus_src}") <(pigz -dc "${corpus_trg}") |
+  shuf --random-source=<(get_seeded_random 42) |
+  pigz > "${tmp}/corpus.shuf.both.gz"
 
 # separate dev and test
 pigz -dc "${tmp}/corpus.shuf.both.gz" | sed -n "1,${test_size}p" | pigz > "${tmp}/corpus.test.both.gz"

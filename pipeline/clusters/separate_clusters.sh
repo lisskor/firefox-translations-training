@@ -13,6 +13,7 @@ input_data=$1
 indices=$2
 n_clusters=$3
 cluster_data_dir=$4
+output_prefix=$5
 
 tmp="${cluster_data_dir}/tmp"
 mkdir -p "${tmp}"
@@ -31,8 +32,8 @@ python pipeline/clusters/separate_clusters.py \
 # compress results and move to cluster directory
 for ((i=0;i<n_clusters;i++))
 do
-  pigz -c "${tmp}/corpus_cluster${i}.${SRC}" > "${cluster_data_dir}/corpus_cluster${i}.${SRC}.gz"
-  pigz -c "${tmp}/corpus_cluster${i}.${TRG}" > "${cluster_data_dir}/corpus_cluster${i}.${TRG}.gz"
+  pigz -c "${tmp}/corpus_cluster${i}.${SRC}" > "${output_prefix}${i}.${SRC}.gz"
+  pigz -c "${tmp}/corpus_cluster${i}.${TRG}" > "${output_prefix}${i}.${TRG}.gz"
 done
 
 # remove temp files
