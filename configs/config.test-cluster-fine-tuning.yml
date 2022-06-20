@@ -1,0 +1,100 @@
+####
+# Test config, it runs the pipeline quickly end to end
+###
+
+
+root: ""
+cuda: ""
+cudnn: ""
+deps: false
+gpus: ""
+numgpus: ""
+workspace: ""
+mariancmake: ""
+
+experiment:
+  name: test-cluster-fine-tuning
+  src: et
+  trg: en
+
+  # options: "" (no fine-tuning to domains, default),
+  # "corpus" (fine-tune to each parallel corpus),
+  # "cluster" (cluster internal representations of the teacher model and fine-tune to resulting clusters)
+  fine-tune-to-domains: cluster
+
+  teacher-ensemble: 2
+  backward-model: ""
+  vocab: ""
+
+  mono-max-sentences-src: 100
+  mono-max-sentences-trg: 100
+  split-length: 100
+  spm-sample-size: 100000
+
+  best-model: chrf
+
+  bicleaner:
+    default-threshold: 0.5
+    dataset-thresholds:
+      opus_ada83/v1: 0
+      mtdata_Neulab-tedtalks_train-1-eng-rus: 0.6
+
+marian-args:
+  training-backward:
+    disp-freq: 10
+    save-freq: 100
+    valid-freq: 250
+    after: 500u
+  training-teacher-base:
+    disp-freq: 10
+    save-freq: 100
+    valid-freq: 250
+    after: 500u
+    transformer-dim-ffn: 512
+    transformer-heads: 2
+    dim-emb: 128
+    enc-depth: 2
+    dec-depth: 2
+  training-teacher-finetuned:
+    disp-freq: 10
+    save-freq: 100
+    valid-freq: 250
+    after: 500u
+    transformer-dim-ffn: 512
+    transformer-heads: 2
+    dim-emb: 128
+    enc-depth: 2
+    dec-depth: 2
+  training-student:
+    disp-freq: 10
+    save-freq: 100
+    valid-freq: 250
+    after: 500u
+  training-student-finetuned:
+    disp-freq: 10
+    save-freq: 100
+    valid-freq: 250
+    after: 500u
+  decoding-backward:
+    mini-batch-words: 2000
+  decoding-teacher:
+    mini-batch-words: 1000
+    precision: float16
+
+# The data here is too small to build a proper vocab,
+# was using a separately trained one when testing
+datasets:
+  train:
+    - opus_ELRC_2922/v1
+    - opus_ELRC_2923/v1
+  devtest:
+    - flores_dev
+  test:
+    - sacrebleu_wmt18
+  mono-src:
+    - news-crawl_news.2020
+  mono-trg:
+    - news-crawl_news.2020
+  held-out-dev-test: true
+  held-out-dev-size: 20
+  held-out-test-size: 20

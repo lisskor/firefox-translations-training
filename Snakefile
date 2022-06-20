@@ -38,9 +38,9 @@ backward_pretrained = config['experiment']['backward-model']
 vocab_pretrained = config['experiment']['vocab']
 
 try:
-    fine_tune_to_corpus = config['experiment']['fine-tune-to-corpus']
+    fine_tune_mode = config['experiment']['fine-tune-to-domains']
 except KeyError:
-    fine_tune_to_corpus = False
+    fine_tune_mode = None
 
 experiment_dir=f"{data_root_dir}/experiments/{src}-{trg}/{experiment}"
 
@@ -111,9 +111,6 @@ filtered = f'{data_dir}/filtered'
 align_dir = f"{data_dir}/alignment"
 
 translated_domains = f"{data_dir}/translated-domains"
-merged_ft = f"{data_dir}/merged-ft"
-filtered_ft = f'{data_dir}/filtered-ft'
-align_dir_ft = f"{data_dir}/alignment-ft"
 
 # models
 models_dir = f"{data_root_dir}/models/{src}-{trg}/{experiment}"
@@ -128,11 +125,7 @@ backward_dir = f'{models_dir}/backward'
 spm_sample_size=config['experiment']['spm-sample-size']
 vocab_path=vocab_pretrained or f"{models_dir}/vocab/vocab.spm"
 
-corpus_finetuned_teacher_dir = f"{models_dir}/teacher-domain-ft"
-student_dir_ft = f"{models_dir}/student-domain-ft"
-student_finetuned_dir_ft = f"{models_dir}/student-domain-ft-finetuned"
-speed_dir_ft = f"{models_dir}/speed-domain-ft"
-exported_dir_ft = f"{models_dir}/exported-domain-ft"
+domain_finetuned_teacher_dir = f"{models_dir}/teacher-domain-ft"
 
 #evaluation
 eval_data_dir = f"{original}/eval"
@@ -143,9 +136,6 @@ eval_student_finetuned_dir = f'{eval_res_dir}/student-finetuned'
 eval_speed_dir = f'{eval_res_dir}/speed'
 eval_teacher_ens_dir = f'{eval_res_dir}/teacher-ensemble'
 
-eval_student_dir_ft = f'{eval_res_dir}/student-domain-ft'
-eval_student_finetuned_dir_ft = f'{eval_res_dir}/student-domain-ft-finetuned'
-eval_speed_dir_ft = f'{eval_res_dir}/speed-domain-ft'
 eval_corpus_ft_teachers_dir = f"{models_dir}/evaluation-domain-ft"
 eval_corpus_ft_teacher_ens_dir = f"{eval_corpus_ft_teachers_dir}/teacher-domain-ft-ensemble"
 
@@ -183,7 +173,7 @@ else:
     do_train_backward = False
     backward_dir = backward_pretrained
 
-if fine_tune_to_corpus:
+if fine_tune_mode == "corpus":
     results.extend(expand(f'{eval_corpus_ft_teachers_dir}/teacher-domain-ft{{ens}}/{{dataset}}/{{eval_dataset}}.metrics',
         ens=ensemble, eval_dataset=all_eval_datasets, dataset=train_datasets))
 
@@ -193,22 +183,32 @@ if fine_tune_to_corpus:
 
 # TODO: add this to config
 num_clusters = 4
-cluster_data_dir = f"{data_dir}/clusters"
-embedded_source = f"{cluster_data_dir}/embedded_source.npz"
-cluster_labels = f"{cluster_data_dir}/cluster_labels.txt"
-cluster_models_dir = f"{models_dir}/clustering"
-clustered_train = f"{cluster_data_dir}/corpus_cluster"
+clustering_teacher_id = "0"
+
+cluster_data_dir = f"{data_dir}/clusters/teacher{clustering_teacher_id}"
+orig_cluster_data_dir = f"{cluster_data_dir}/original"
+embedded_cluster_data_dir = f"{cluster_data_dir}/embedded"
+labels_cluster_data_dir = f"{cluster_data_dir}/labels"
+split_cluster_data_dir = f"{cluster_data_dir}/split"
+embedded_source_postfix = "embedded_source.npz"
+cluster_labels_postfix = "cluster_labels.txt"
+cluster_models_dir = f"{models_dir}/clustering/teacher{clustering_teacher_id}"
+clustered_train_postfix = "corpus_cluster"
 # TODO: a better way to do this
 vocab_file_path = vocab_path[:-3] + "vocab"
-hf_model_dir = f"{cluster_models_dir}/huggingface-teacher"
-kmeans_model = f"{cluster_models_dir}/kmeans_model.dump"
+hf_model_dir = f"{cluster_models_dir}-huggingface"
+kmeans_model_postfix = "kmeans_model.dump"
 hf_conversion_outputs = ["config.json", "pytorch_model.bin", "special_tokens_map.json",
                          "tokenizer_config.json", "marian_original_config.json",
                          "source.spm", "target.spm", "vocab.json"]
-# results.append(cluster_labels)
-results.extend(expand(f"{clustered_train}{{cluster_id}}.{{lang}}.gz",
-        cluster_id=list(range(num_clusters)),
-        lang=[src, trg]))
+
+if fine_tune_mode == "cluster":
+    results.extend(expand(f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}',
+            ens=[0],
+            dataset=list(range(num_clusters))))
+    results.extend(expand(f"{split_cluster_data_dir}/test/{{dataset}}/{clustered_train_postfix}{{cluster_id}}.{{lang}}.gz",
+                    cluster_id=list(range(num_clusters)), lang=[src, trg], dataset=all_eval_datasets))
+    results.append(f"{orig_cluster_data_dir}/train/corpus.{src}.gz")
 
 # bicleaner
 
@@ -532,7 +532,7 @@ if not held_out_dev_test:
         shell: '''bash pipeline/clean/merge-corpus.sh "{params.prefix_output}" {params.prefixes} >> {log} 2>&1'''
 
 # Merge individually deduplicated training corpora (used to compare files after forward-translation)
-if fine_tune_to_corpus:
+if fine_tune_mode == "corpus":
     rule merge_corpus_for_forward_translation:
         message: "Merging clean parallel datasets for domain fine-tuning (with individual deduplication)"
         log: f"{log_dir}/merge_corpus_for_forward_translation.log"
@@ -561,6 +561,22 @@ rule merge_devset:
     output: multiext(f"{original}/devset", f".{src}.gz", f".{trg}.gz")
     params: prefix_output=f"{original}/devset", prefixes=expand(f"{original}/devset/{{dataset}}", dataset=valid_datasets)
     shell: '''bash pipeline/clean/merge-corpus.sh "{params.prefix_output}" {params.prefixes} >> {log} 2>&1'''
+
+if fine_tune_mode == "cluster":
+    rule merge_all_devsets:
+        message: "Merging all devsets for cluster fine-tuning"
+        log: f"{log_dir}/merge_all_devsets_for_clustering.log"
+        conda: "envs/base.yml"
+        threads: workflow.cores
+        # group: "clean_corpus"
+        input: rules.merge_devset.output,
+               expand(f"{held_out_corpus_prefix}/dev/{{dataset}}.{{lang}}.gz", dataset=train_datasets, lang=[src, trg])
+        output: multiext(f"{orig_cluster_data_dir}/dev/devset", f".{src}.gz", f".{trg}.gz")
+        params:
+            prefix_output=f"{orig_cluster_data_dir}/dev/devset",
+            external_dev_prefix=f"{original}/devset",
+            held_out_prefixes=expand(f"{held_out_corpus_prefix}/dev/{{dataset}}", dataset=train_datasets)
+        shell: '''bash pipeline/clean/merge-corpus.sh "{params.prefix_output}" {params.external_dev_prefix} {params.held_out_prefixes} >> {log} 2>&1'''
 
 rule merge_mono:
     message: "Merging clean monolingual datasets"
@@ -695,89 +711,161 @@ if augment_corpus:
                     teacher train {src} {trg} "{params.prefix_train}" "{params.prefix_test}" "{params.dir}" \
                     "{input.vocab}" --pretrained-model "{input.model}" {params.args} >> {log} 2>&1'''
 
-rule convert_teacher_to_hf:
-    message: "Convert teacher to HuggingFace format"
-    log: f"{log_dir}/convert_teacher{{ens}}_to_hf.log"
-    conda: "envs/huggingface.yml"
-    threads: 4
-    input:
-        general_teacher=f'{final_teacher_dir}{{ens}}/{best_model}',
-        spm_vocab=vocab_path,
-    output: expand(f"{hf_model_dir}{{ens}}/{{file}}", file=hf_conversion_outputs, allow_missing=True)
-    params:
-        dest_dir=f'{hf_model_dir}{{ens}}',
-        decoder_config=f'{final_teacher_dir}{{ens}}/{best_model}.decoder.yml',
-        vocab=vocab_file_path
-    shell: '''python {third_party_dir}/domain_clusters/convert_marian_bergamot_to_pytorch_.py \
-                --npz-model-path "{input.general_teacher}" --yml-decoder-path "{params.decoder_config}" \
-                --spm-model-path "{input.spm_vocab}" --vocab-path "{params.vocab}" --dest-dir "{params.dest_dir}" >> {log} 2>&1'''
+if fine_tune_mode == "cluster":
+    rule convert_teacher_to_hf:
+        message: "Convert teacher to HuggingFace format"
+        log: f"{log_dir}/convert_teacher{{ens}}_to_hf.log"
+        conda: "envs/huggingface.yml"
+        threads: 4
+        input:
+            general_teacher=f'{final_teacher_dir}{{ens}}/{best_model}',
+            spm_vocab=vocab_path,
+        output: expand(f"{hf_model_dir}{{ens}}/{{file}}", file=hf_conversion_outputs, allow_missing=True)
+        params:
+            dest_dir=f'{hf_model_dir}{{ens}}',
+            decoder_config=f'{final_teacher_dir}{{ens}}/{best_model}.decoder.yml',
+            vocab=vocab_file_path
+        shell: '''python {third_party_dir}/domain_clusters/convert_marian_bergamot_to_pytorch_.py \
+                    --npz-model-path "{input.general_teacher}" --yml-decoder-path "{params.decoder_config}" \
+                    --spm-model-path "{input.spm_vocab}" --vocab-path "{params.vocab}" --dest-dir "{params.dest_dir}" >> {log} 2>&1'''
 
-# TODO: split corpus into parts, same as for forward-translation
-# TODO: do not hardcode teacher id
-rule extract_sentence_representations:
-    message: "Extract sentence representations for clustering"
-    log: f"{log_dir}/extract_reprs_teacher0.log"
-    conda: "envs/huggingface.yml"
-    threads: 2
-    resources: gpu=1
-    input:
-        input_data=clean_corpus_src,
-        hf_model=f"{hf_model_dir}0/pytorch_model.bin"
-    output: f"{embedded_source}"
-    params:
-        hf_teacher_dir=f"{hf_model_dir}0",
-        layer_num=4,
-        batch_size=1000
-    shell: '''bash pipeline/clusters/extract_sentence_representations.sh \
-                "{input.input_data}" "{params.hf_teacher_dir}" "{params.batch_size}" \
-                "{params.layer_num}" "{output}" >> {log} 2>&1'''
+    rule make_symlinks_for_clustering:
+        message: "Create symlinks to corpora for unified clustering"
+        log: f"{log_dir}/create_symlinks.log"
+        conda: "envs/base.yml"
+        threads: 1
+        input:
+            train_corpora=multiext(clean_corpus_prefix, f".{src}.gz", f".{trg}.gz"),
+            test_corpora=expand(f'{eval_data_dir}/{{dataset}}.{{lang}}.gz', lang=[src, trg], dataset=all_eval_datasets)
+        output:
+            train_links=multiext(f"{orig_cluster_data_dir}/train/corpus", f".{src}.gz", f".{trg}.gz"),
+            test_links=expand(f'{orig_cluster_data_dir}/test/{{dataset}}.{{lang}}.gz', lang=[src, trg], dataset=all_eval_datasets)
+        shell: '''python pipeline/clusters/create_symlinks.py \
+                    --files {input.train_corpora} {input.test_corpora} \
+                    --links {output.train_links} {output.test_links} >> {log} 2>&1'''
 
-rule corpus_clustering:
-    message: "Extract sentence representations for clustering"
-    log: f"{log_dir}/cluster_corpus_teacher0.log"
-    conda: "envs/huggingface.yml"
-    threads: 2
-    resources: gpu=1
-    input:
-        embeddings=f"{embedded_source}",
-    output:
-        model=kmeans_model,
-        labels=cluster_labels
-    params:
-        num_clusters=num_clusters,
-        num_initializations=10,
-        max_iterations=300,
-        batch_size=1024,
-        max_no_improvement=10
-    shell: '''python {third_party_dir}/domain_clusters/run_clustering.py \
-                    --embedded-dataset-path {input.embeddings} --out-file-model {output.model} \
-                    --out-file-labels {output.labels} --n-clusters {params.num_clusters} \
-                    --n_init {params.num_initializations} --max-iter {params.max_iterations} \
-                    --batch-size {params.batch_size} --max-no-improvement-size {params.max_no_improvement} \
-                    --verbose 1 --random-state 42 >> {log} 2>&1'''
+    # TODO: unify train/dev/test clustering rules
+    rule extract_sentence_representations:
+        message: "Extract sentence representations for clustering"
+        log: f"{log_dir}/extract_reprs_{{dataset}}_teacher{clustering_teacher_id}.log"
+        conda: "envs/huggingface.yml"
+        threads: 2
+        resources: gpu=1
+        input:
+            input_data=f"{orig_cluster_data_dir}/{{dataset}}.{src}.gz",
+            hf_model=f"{hf_model_dir}{clustering_teacher_id}/pytorch_model.bin"
+        output: f"{embedded_cluster_data_dir}/{{dataset}}/{embedded_source_postfix}"
+        params:
+            hf_teacher_dir=f"{hf_model_dir}{clustering_teacher_id}",
+            layer_num=2,
+            batch_size=200
+        shell: '''bash pipeline/clusters/extract_sentence_representations.sh \
+                    "{input.input_data}" "{params.hf_teacher_dir}" "{params.batch_size}" \
+                    "{params.layer_num}" "{output}" >> {log} 2>&1'''
 
-rule split_train_into_clusters:
-    message: "Split training corpus into discovered clusters"
-    log: f"{log_dir}/split_train_into_clusters.log"
-    conda: "envs/base.yml"
-    threads: 4
-    input:
-        labels=cluster_labels,
-        input_src=clean_corpus_src,
-        input_trg=clean_corpus_trg
-    output:
-        expand(f"{clustered_train}{{cluster_id}}.{{lang}}.gz",
-                cluster_id=list(range(num_clusters)), lang=[src, trg])
-    params:
-        input_prefix=clean_corpus_prefix,
-        num_clusters=num_clusters,
-        cluster_dir=cluster_data_dir
-    shell: '''bash pipeline/clusters/separate_clusters.sh \
-                "{params.input_prefix}" "{input.labels}" "{params.num_clusters}" \
-                "{params.cluster_dir}" >> {log} 2>&1'''
+    rule corpus_clustering_train:
+        message: "Train a k-means model and cluster training data"
+        log: f"{log_dir}/cluster_corpus_teacher{clustering_teacher_id}.log"
+        conda: "envs/huggingface.yml"
+        threads: 2
+        resources: gpu=1
+        input:
+            embeddings=f"{embedded_cluster_data_dir}/train/corpus/{embedded_source_postfix}"
+            # embeddings=rules.extract_sentence_representations_train.output,#f"{cluster_data_dir}{{ens}}/train_{embedded_source_postfix}"
+        output:
+            model=f"{cluster_models_dir}/{kmeans_model_postfix}",
+            labels=f"{labels_cluster_data_dir}/train/corpus/{cluster_labels_postfix}"
+        params:
+            num_clusters=num_clusters,
+            num_initializations=10,
+            max_iterations=300,
+            batch_size=1024,
+            max_no_improvement=10
+        shell: '''python {third_party_dir}/domain_clusters/run_clustering.py \
+                        --embedded-dataset-path {input.embeddings} --out-file-model {output.model} \
+                        --out-file-labels {output.labels} --n-clusters {params.num_clusters} \
+                        --n_init {params.num_initializations} --max-iter {params.max_iterations} \
+                        --batch-size {params.batch_size} --max-no-improvement-size {params.max_no_improvement} \
+                        --verbose 1 --random-state 42 >> {log} 2>&1'''
 
+    rule corpus_clustering_dev_and_test:
+        message: "Cluster dev and test data with pre-trained k-means model"
+        log: f"{log_dir}/cluster_teacher{clustering_teacher_id}_{{dataset}}.log"
+        conda: "envs/huggingface.yml"
+        threads: 2
+        resources: gpu=1
+        input:
+            embeddings=rules.extract_sentence_representations.output,
+            # embeddings=rules.extract_sentence_representations_dev.output, #f"{cluster_data_dir}{{ens}}/train_{embedded_source_postfix}"
+            model=rules.corpus_clustering_train.output.model #f"{cluster_models_dir}{{ens}}/{kmeans_model_postfix}"
+        output:
+            labels=f"{labels_cluster_data_dir}/{{dataset}}/{cluster_labels_postfix}"
+        params:
+            num_clusters=num_clusters,
+            num_initializations=10,
+            max_iterations=300,
+            batch_size=1024,
+            max_no_improvement=10
+        shell: '''python {third_party_dir}/domain_clusters/run_clustering.py \
+                        --predict-with-model {input.model} \
+                        --embedded-dataset-path {input.embeddings} \
+                        --out-file-labels {output.labels} --n-clusters {params.num_clusters} \
+                        --n_init {params.num_initializations} --max-iter {params.max_iterations} \
+                        --batch-size {params.batch_size} --max-no-improvement-size {params.max_no_improvement} \
+                        --verbose 1 --random-state 42 >> {log} 2>&1'''
 
-if fine_tune_to_corpus:
+    rule split_corpus_into_clusters:
+        message: "Split corpus into discovered clusters"
+        log: f"{log_dir}/split_into_clusters_{clustering_teacher_id}_{{dataset}}.log"
+        conda: "envs/base.yml"
+        threads: 4
+        input:
+            labels=f"{labels_cluster_data_dir}/{{dataset}}/{cluster_labels_postfix}",
+            input=multiext(f"{orig_cluster_data_dir}/{{dataset}}", f".{src}.gz", f".{trg}.gz")
+            # labels=rules.corpus_clustering.output.labels, #f"{cluster_data_dir}{{ens}}/train_{cluster_labels_postfix}",
+            # input_src=clean_corpus_src,
+            # input_trg=clean_corpus_trg
+        output:
+            expand(f"{split_cluster_data_dir}/{{dataset}}/{clustered_train_postfix}{{cluster_id}}.{{lang}}.gz",
+                    cluster_id=list(range(num_clusters)), lang=[src, trg], allow_missing=True)
+        params:
+            input_prefix=f"{orig_cluster_data_dir}/{{dataset}}",
+            num_clusters=num_clusters,
+            cluster_dir=f"{split_cluster_data_dir}/{{dataset}}",
+            output_prefix=f"{split_cluster_data_dir}/{{dataset}}/{clustered_train_postfix}"
+        shell: '''bash pipeline/clusters/separate_clusters.sh \
+                    "{params.input_prefix}" "{input.labels}" "{params.num_clusters}" \
+                    "{params.cluster_dir}" "{params.output_prefix}" >> {log} 2>&1'''
+
+    rule fine_tune_to_clusters:
+        message: "Fine-tune teacher on each cluster"
+        log: f"{log_dir}/finetune_teacher{{ens}}_to_cluster_{{dataset}}.log"
+        conda: "envs/base.yml"
+        threads: gpus_num * 2
+        resources: gpu=gpus_num
+        group: 'teacher{ens}'
+        input:
+            dev_src=f"{split_cluster_data_dir}/dev/devset/{clustered_train_postfix}{{dataset}}.{src}.gz",
+            dev_trg=f"{split_cluster_data_dir}/dev/devset/{clustered_train_postfix}{{dataset}}.{trg}.gz",
+            train_src=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{src}.gz",
+            train_trg=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{trg}.gz",
+            bin=ancient(trainer),vocab=vocab_path,
+            general_teacher=f'{final_teacher_dir}{{ens}}/{best_model}'
+        output:
+            model=f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}'
+        params:
+            prefix_train=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}",
+            prefix_test=f"{split_cluster_data_dir}/dev/devset/{clustered_train_postfix}{{dataset}}",
+            dir=directory(f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}'),
+            args=get_args("training-teacher-finetuned")
+        wildcard_constraints:
+            ens="\d+",
+            dataset="\d+"
+        shell: '''bash pipeline/train/train.sh \
+                    teacher train {src} {trg} "{params.prefix_train}" "{params.prefix_test}" "{params.dir}" \
+                    "{input.vocab}" --pretrained-model "{input.general_teacher}" {params.args} >> {log} 2>&1'''
+
+if fine_tune_mode == "corpus":
     ### fine-tune teacher to corpora
     rule finetune_teacher_to_corpora:
         message: "Fine-tune teacher on each corpus"
@@ -794,11 +882,11 @@ if fine_tune_to_corpus:
             bin=ancient(trainer),vocab=vocab_path,
             general_teacher=f'{final_teacher_dir}{{ens}}/{best_model}'
         output:
-            model=f'{corpus_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}'
+            model=f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}'
         params:
             prefix_train=f"{held_out_corpus_prefix}/train/{{dataset}}",
             prefix_test=f"{held_out_corpus_prefix}/dev/{{dataset}}",
-            dir=directory(f'{corpus_finetuned_teacher_dir}{{ens}}/{{dataset}}'),
+            dir=directory(f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}'),
             args=get_args("training-teacher-finetuned")
         wildcard_constraints: ens="\d+", dataset="|".join(train_datasets)
         shell: '''bash pipeline/train/train.sh \
@@ -811,7 +899,7 @@ if fine_tune_to_corpus:
 
 # Workflow without fine-tuning teacher models to parallel corpora
 # Forward-translate with general teacher
-if not fine_tune_to_corpus:
+if not fine_tune_mode:
     checkpoint split_corpus:
         message: "Splitting the corpus to translate"
         log: f"{log_dir}/split_corpus.log"
@@ -861,9 +949,28 @@ if not fine_tune_to_corpus:
         params: src_corpus=clean_corpus_src
         shell: 'bash pipeline/translate/collect.sh {translated}/corpus {output} {params.src_corpus} >> {log} 2>&1'
 
+# Workflow with fine-tuning teachers to clusters
+# TODO: unify rules for corpora & clusters
+if fine_tune_mode == "cluster":
+    checkpoint split_corpus_clusters:
+        message: "Splitting the corpus to translate (clusters kept separate)"
+        log: f"{log_dir}/split_corpus_clusters_{{dataset}}.log"
+        conda: "envs/base.yml"
+        threads: 1
+        wildcard_constraints: dataset="\d+"
+        input:
+            corpus_src=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{src}.gz",
+            corpus_trg=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{trg}.gz"
+        output:
+            directory(f"{translated_domains}/corpus/parts/{{dataset}}")
+        params:
+            output_dir=f"{translated_domains}/corpus/parts/{{dataset}}"
+        shell: '''bash pipeline/translate/split-corpus.sh \
+                    {input.corpus_src} {input.corpus_trg} {params.output_dir} {split_length} >> {log} 2>&1'''
+
 # Workflow with fine-tuning teachers to multiple parallel corpora
 # Translate with multiple domain teachers
-if fine_tune_to_corpus:
+if fine_tune_mode == "corpus":
     checkpoint split_corpus_domains:
         message: "Splitting the corpus to translate (domains kept separate)"
         log: f"{log_dir}/split_corpus_domains_{{dataset}}.log"
@@ -879,6 +986,7 @@ if fine_tune_to_corpus:
         shell: '''bash pipeline/translate/split-corpus.sh \
                     {input.corpus_src} {input.corpus_trg} {params.output_dir} {split_length} >> {log} 2>&1'''
 
+if fine_tune_mode:
     rule translate_corpus_domains:
         message: "Translating corpora with domain teachers"
         log: f"{log_dir}/translate_corpus_domains/{{dataset}}_{{part}}.log"
@@ -889,7 +997,7 @@ if fine_tune_to_corpus:
             ancient(decoder),
             file=f'{translated_domains}/corpus/parts/{{dataset}}/file.{{part}}',
             vocab=vocab_path,
-            teacher_models=expand(f'{corpus_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}',
+            teacher_models=expand(f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}',
                                     ens=ensemble, allow_missing=True)
         output: f'{translated_domains}/corpus/parts/{{dataset}}/file.{{part}}.nbest'
         params: args=get_args('decoding-teacher')
@@ -917,10 +1025,10 @@ if fine_tune_to_corpus:
         # group: 'translate_corpus'
         input:
             lambda wildcards: expand(f"{translated_domains}/corpus/parts/{{dataset}}/file.{{part}}.nbest.out",
-                part=find_parts(wildcards,checkpoints.split_corpus_domains),
+                part=find_parts(wildcards,checkpoints.split_corpus_domains) if fine_tune_mode == "corpus" else find_parts(wildcards,checkpoints.split_corpus_clusters),
                 allow_missing=True)
         output: f'{translated_domains}/corpus/collected/{{dataset}}.{trg}.gz'
-        params: src_corpus=f'{held_out_corpus_prefix}/train/{{dataset}}.{src}.gz'
+        params: src_corpus=f'{held_out_corpus_prefix}/train/{{dataset}}.{src}.gz' if fine_tune_mode == "corpus" else f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{src}.gz"
         shell: '''bash pipeline/translate/collect.sh \
                  {translated_domains}/corpus/parts/{wildcards.dataset} \
                  {output} {params.src_corpus} >> {log} 2>&1'''
@@ -933,11 +1041,11 @@ if fine_tune_to_corpus:
         #group: 'translate_corpus'
         input:
             translations=expand(f'{translated_domains}/corpus/collected/{{dataset}}.{trg}.gz',
-                dataset=train_datasets),
-            src_corpus=clean_corpus_domain_ft_src
+                dataset=train_datasets if fine_tune_mode == "corpus" else list(range(num_clusters))),
+            src_corpus=clean_corpus_domain_ft_src if fine_tune_mode == "corpus" else clean_corpus_src
         output: f'{translated_domains}/corpus.{trg}.gz'
         params:
-            src_corpus=clean_corpus_domain_ft_src
+            src_corpus=clean_corpus_domain_ft_src if fine_tune_mode == "corpus" else clean_corpus_src
         shell: '''bash pipeline/translate/collect-corpora.sh \
                          {output} {params.src_corpus} {input.translations} >> {log} 2>&1'''
 
@@ -990,9 +1098,9 @@ rule merge_translated:
     threads: 4
     #group 'mono_src'
     input:
-        src1=clean_corpus_src if not fine_tune_to_corpus else clean_corpus_domain_ft_src,
+        src1=clean_corpus_src if fine_tune_mode != "corpus" else clean_corpus_domain_ft_src,
         src2=f"{clean}/mono.{src}.gz",
-        trg1=rules.collect_corpus.output if not fine_tune_to_corpus else rules.collect_all_corpora_domains.output,
+        trg1=rules.collect_corpus.output if not fine_tune_mode else rules.collect_all_corpora_domains.output,
         trg2=rules.collect_mono_src.output,
         bin=ancient(deduper)
     output: res_src=f'{merged}/corpus.{src}.gz',res_trg=f'{merged}/corpus.{trg}.gz'
@@ -1171,7 +1279,7 @@ rule eval_quantized:
     shell: '''bash pipeline/eval/eval-quantized.sh "{input.model}" "{input.shortlist}" "{params.dataset_prefix}" \
             "{input.vocab}" "{params.res_prefix}" "{params.decoder_config}" >> {log} 2>&1'''
 
-if fine_tune_to_corpus:
+if fine_tune_mode == "corpus":
     rule eval_teachers_finetuned_to_corpus:
         message: "Evaluating a model"
         log: f"{log_dir}/eval/eval_teachers_finetuned_to_corpus_{{model}}_{{train_dataset}}_{{dataset}}.log"
@@ -1188,7 +1296,7 @@ if fine_tune_to_corpus:
             data=multiext(f'{eval_data_dir}/{{dataset}}',f".{src}.gz",f".{trg}.gz"),
             models=lambda wildcards: f'{models_dir}/{wildcards.model}/{wildcards.train_dataset}/{best_model}'
                                         if wildcards.model != 'teacher-domain-ft-ensemble'
-                                        else [f'{corpus_finetuned_teacher_dir}{ens}/{wildcards.train_dataset}/{best_model}'
+                                        else [f'{domain_finetuned_teacher_dir}{ens}/{wildcards.train_dataset}/{best_model}'
                                               for ens in ensemble]
         output:
             report(f'{eval_corpus_ft_teachers_dir}/{{model}}/{{train_dataset}}/{{dataset}}.metrics',
@@ -1200,6 +1308,6 @@ if fine_tune_to_corpus:
             trg_lng=trg,
             decoder_config=lambda wildcards: f'{models_dir}/{wildcards.model}/{wildcards.train_dataset}/{best_model}.decoder.yml'
                             if wildcards.model != 'teacher-domain-ft-ensemble'
-                            else f'{corpus_finetuned_teacher_dir}0/{wildcards.train_dataset}/{best_model}.decoder.yml'
+                            else f'{domain_finetuned_teacher_dir}0/{wildcards.train_dataset}/{best_model}.decoder.yml'
         shell: '''bash pipeline/eval/eval-gpu.sh "{params.res_prefix}" "{params.dataset_prefix}" \
                  {params.src_lng} {params.trg_lng} "{params.decoder_config}" {input.models} >> {log} 2>&1'''
