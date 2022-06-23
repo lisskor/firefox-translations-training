@@ -206,9 +206,13 @@ if fine_tune_mode == "cluster":
     results.extend(expand(f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}',
             ens=[0],
             dataset=list(range(num_clusters))))
-    results.extend(expand(f"{split_cluster_data_dir}/test/{{dataset}}/{clustered_train_postfix}{{cluster_id}}.{{lang}}.gz",
-                    cluster_id=list(range(num_clusters)), lang=[src, trg], dataset=all_eval_datasets))
-    results.append(f"{orig_cluster_data_dir}/train/corpus.{src}.gz")
+
+    results.extend(expand(f'{eval_corpus_ft_teachers_dir}/teacher-domain-ft{{ens}}/{{eval_dataset}}.metrics',
+        ens=ensemble, eval_dataset=all_eval_datasets))
+
+    if len(ensemble) > 1:
+        results.extend(expand(f'{eval_corpus_ft_teacher_ens_dir}/{{eval_dataset}}.metrics',
+            eval_dataset=all_eval_datasets))
 
 # bicleaner
 
@@ -744,7 +748,6 @@ if fine_tune_mode == "cluster":
                     --files {input.train_corpora} {input.test_corpora} \
                     --links {output.train_links} {output.test_links} >> {log} 2>&1'''
 
-    # TODO: unify train/dev/test clustering rules
     rule extract_sentence_representations:
         message: "Extract sentence representations for clustering"
         log: f"{log_dir}/extract_reprs_{{dataset}}_teacher{clustering_teacher_id}.log"
@@ -822,9 +825,6 @@ if fine_tune_mode == "cluster":
         input:
             labels=f"{labels_cluster_data_dir}/{{dataset}}/{cluster_labels_postfix}",
             input=multiext(f"{orig_cluster_data_dir}/{{dataset}}", f".{src}.gz", f".{trg}.gz")
-            # labels=rules.corpus_clustering.output.labels, #f"{cluster_data_dir}{{ens}}/train_{cluster_labels_postfix}",
-            # input_src=clean_corpus_src,
-            # input_trg=clean_corpus_trg
         output:
             expand(f"{split_cluster_data_dir}/{{dataset}}/{clustered_train_postfix}{{cluster_id}}.{{lang}}.gz",
                     cluster_id=list(range(num_clusters)), lang=[src, trg], allow_missing=True)
@@ -837,58 +837,37 @@ if fine_tune_mode == "cluster":
                     "{params.input_prefix}" "{input.labels}" "{params.num_clusters}" \
                     "{params.cluster_dir}" "{params.output_prefix}" >> {log} 2>&1'''
 
-    rule fine_tune_to_clusters:
-        message: "Fine-tune teacher on each cluster"
-        log: f"{log_dir}/finetune_teacher{{ens}}_to_cluster_{{dataset}}.log"
+if fine_tune_mode:
+    ### fine-tune teacher to domains
+    # TODO: get rid of at least some if-else's in this rule?
+    rule finetune_teacher_to_domains:
+        message: "Fine-tune teacher on each domain (corpus or cluster)"
+        log: f"{log_dir}/finetune_teacher{{ens}}_to_domains_{{dataset}}.log"
         conda: "envs/base.yml"
         threads: gpus_num * 2
         resources: gpu=gpus_num
         group: 'teacher{ens}'
         input:
-            dev_src=f"{split_cluster_data_dir}/dev/devset/{clustered_train_postfix}{{dataset}}.{src}.gz",
-            dev_trg=f"{split_cluster_data_dir}/dev/devset/{clustered_train_postfix}{{dataset}}.{trg}.gz",
-            train_src=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{src}.gz",
-            train_trg=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{trg}.gz",
+            dev_src=rules.create_held_out_sets.output.src_dev if fine_tune_mode == "corpus" \
+                else f"{split_cluster_data_dir}/dev/devset/{clustered_train_postfix}{{dataset}}.{src}.gz",
+            dev_trg=rules.create_held_out_sets.output.trg_dev if fine_tune_mode == "corpus" \
+                else f"{split_cluster_data_dir}/dev/devset/{clustered_train_postfix}{{dataset}}.{trg}.gz",
+            train_src=rules.create_held_out_sets.output.src_train if fine_tune_mode == "corpus" \
+                else f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{src}.gz",
+            train_trg=rules.create_held_out_sets.output.trg_train if fine_tune_mode == "corpus" \
+                else f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{trg}.gz",
             bin=ancient(trainer),vocab=vocab_path,
             general_teacher=f'{final_teacher_dir}{{ens}}/{best_model}'
         output:
             model=f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}'
         params:
-            prefix_train=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}",
-            prefix_test=f"{split_cluster_data_dir}/dev/devset/{clustered_train_postfix}{{dataset}}",
+            prefix_train=f"{held_out_corpus_prefix}/train/{{dataset}}" if fine_tune_mode == "corpus" \
+                else f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}",
+            prefix_test=f"{held_out_corpus_prefix}/dev/{{dataset}}" if fine_tune_mode == "corpus" \
+                else f"{split_cluster_data_dir}/dev/devset/{clustered_train_postfix}{{dataset}}",
             dir=directory(f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}'),
             args=get_args("training-teacher-finetuned")
-        wildcard_constraints:
-            ens="\d+",
-            dataset="\d+"
-        shell: '''bash pipeline/train/train.sh \
-                    teacher train {src} {trg} "{params.prefix_train}" "{params.prefix_test}" "{params.dir}" \
-                    "{input.vocab}" --pretrained-model "{input.general_teacher}" {params.args} >> {log} 2>&1'''
-
-if fine_tune_mode == "corpus":
-    ### fine-tune teacher to corpora
-    rule finetune_teacher_to_corpora:
-        message: "Fine-tune teacher on each corpus"
-        log: f"{log_dir}/finetune_teacher_to_corpora{{ens}}_{{dataset}}.log"
-        conda: "envs/base.yml"
-        threads: gpus_num * 2
-        resources: gpu=gpus_num
-        group: 'teacher{ens}'
-        input:
-            dev_src=rules.create_held_out_sets.output.src_dev,
-            dev_trg=rules.create_held_out_sets.output.trg_dev,
-            train_src=rules.create_held_out_sets.output.src_train,
-            train_trg=rules.create_held_out_sets.output.trg_train,
-            bin=ancient(trainer),vocab=vocab_path,
-            general_teacher=f'{final_teacher_dir}{{ens}}/{best_model}'
-        output:
-            model=f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}'
-        params:
-            prefix_train=f"{held_out_corpus_prefix}/train/{{dataset}}",
-            prefix_test=f"{held_out_corpus_prefix}/dev/{{dataset}}",
-            dir=directory(f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}'),
-            args=get_args("training-teacher-finetuned")
-        wildcard_constraints: ens="\d+", dataset="|".join(train_datasets)
+        wildcard_constraints: ens="\d+", dataset="|".join(train_datasets) if fine_tune_mode == "corpus" else "\d+"
         shell: '''bash pipeline/train/train.sh \
                     teacher train {src} {trg} "{params.prefix_train}" "{params.prefix_test}" "{params.dir}" \
                     "{input.vocab}" --pretrained-model "{input.general_teacher}" {params.args} >> {log} 2>&1'''
@@ -949,36 +928,19 @@ if not fine_tune_mode:
         params: src_corpus=clean_corpus_src
         shell: 'bash pipeline/translate/collect.sh {translated}/corpus {output} {params.src_corpus} >> {log} 2>&1'
 
-# Workflow with fine-tuning teachers to clusters
-# TODO: unify rules for corpora & clusters
-if fine_tune_mode == "cluster":
-    checkpoint split_corpus_clusters:
-        message: "Splitting the corpus to translate (clusters kept separate)"
-        log: f"{log_dir}/split_corpus_clusters_{{dataset}}.log"
-        conda: "envs/base.yml"
-        threads: 1
-        wildcard_constraints: dataset="\d+"
-        input:
-            corpus_src=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{src}.gz",
-            corpus_trg=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{trg}.gz"
-        output:
-            directory(f"{translated_domains}/corpus/parts/{{dataset}}")
-        params:
-            output_dir=f"{translated_domains}/corpus/parts/{{dataset}}"
-        shell: '''bash pipeline/translate/split-corpus.sh \
-                    {input.corpus_src} {input.corpus_trg} {params.output_dir} {split_length} >> {log} 2>&1'''
-
-# Workflow with fine-tuning teachers to multiple parallel corpora
-# Translate with multiple domain teachers
-if fine_tune_mode == "corpus":
+# Workflow with fine-tuning teachers to corpora or clusters
+if fine_tune_mode:
     checkpoint split_corpus_domains:
-        message: "Splitting the corpus to translate (domains kept separate)"
+        message: "Splitting the corpus to translate (clusters kept separate)"
         log: f"{log_dir}/split_corpus_domains_{{dataset}}.log"
         conda: "envs/base.yml"
         threads: 1
+        # wildcard_constraints: dataset="\d+"
         input:
-            corpus_src=f'{held_out_corpus_prefix}/train/{{dataset}}.{src}.gz',
-            corpus_trg=f'{held_out_corpus_prefix}/train/{{dataset}}.{trg}.gz'
+            corpus_src=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{src}.gz" \
+                if fine_tune_mode == "cluster" else f'{held_out_corpus_prefix}/train/{{dataset}}.{src}.gz',
+            corpus_trg=f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{trg}.gz" \
+                if fine_tune_mode == "cluster" else f'{held_out_corpus_prefix}/train/{{dataset}}.{trg}.gz'
         output:
             directory(f"{translated_domains}/corpus/parts/{{dataset}}")
         params:
@@ -986,7 +948,6 @@ if fine_tune_mode == "corpus":
         shell: '''bash pipeline/translate/split-corpus.sh \
                     {input.corpus_src} {input.corpus_trg} {params.output_dir} {split_length} >> {log} 2>&1'''
 
-if fine_tune_mode:
     rule translate_corpus_domains:
         message: "Translating corpora with domain teachers"
         log: f"{log_dir}/translate_corpus_domains/{{dataset}}_{{part}}.log"
@@ -1025,7 +986,8 @@ if fine_tune_mode:
         # group: 'translate_corpus'
         input:
             lambda wildcards: expand(f"{translated_domains}/corpus/parts/{{dataset}}/file.{{part}}.nbest.out",
-                part=find_parts(wildcards,checkpoints.split_corpus_domains) if fine_tune_mode == "corpus" else find_parts(wildcards,checkpoints.split_corpus_clusters),
+                part=find_parts(wildcards,checkpoints.split_corpus_domains),
+                # part=find_parts(wildcards,checkpoints.split_corpus_domains) if fine_tune_mode == "corpus" else find_parts(wildcards,checkpoints.split_corpus_clusters),
                 allow_missing=True)
         output: f'{translated_domains}/corpus/collected/{{dataset}}.{trg}.gz'
         params: src_corpus=f'{held_out_corpus_prefix}/train/{{dataset}}.{src}.gz' if fine_tune_mode == "corpus" else f"{split_cluster_data_dir}/train/corpus/{clustered_train_postfix}{{dataset}}.{src}.gz"
@@ -1311,3 +1273,68 @@ if fine_tune_mode == "corpus":
                             else f'{domain_finetuned_teacher_dir}0/{wildcards.train_dataset}/{best_model}.decoder.yml'
         shell: '''bash pipeline/eval/eval-gpu.sh "{params.res_prefix}" "{params.dataset_prefix}" \
                  {params.src_lng} {params.trg_lng} "{params.decoder_config}" {input.models} >> {log} 2>&1'''
+
+if fine_tune_mode == "cluster":
+    rule translate_with_teachers_finetuned_to_cluster:
+        message: "Evaluating a model"
+        log: f"{log_dir}/eval/transl_teachers_finetuned_to_cluster_{{model}}_{{cluster_id}}_{{dataset}}.log"
+        conda: "envs/base.yml"
+        threads: gpus_num * 2
+        resources: gpu=gpus_num
+        #group '{model}'
+        priority: 50
+        wildcard_constraints:
+            model="[\w-]+",
+            dataset="|".join(all_eval_datasets),
+            cluster_id="\d+"
+        input:
+            ancient(decoder),
+            data=multiext(f"{split_cluster_data_dir}/test/{{dataset}}/{clustered_train_postfix}{{cluster_id}}",
+                    f".{src}.gz", f".{trg}.gz"),
+            models=lambda wildcards: f'{models_dir}/{wildcards.model}/{wildcards.cluster_id}/{best_model}'
+                                        if wildcards.model != 'teacher-domain-ft-ensemble'
+                                        else [f'{domain_finetuned_teacher_dir}{ens}/{wildcards.cluster_id}/{best_model}'
+                                              for ens in ensemble]
+        output:
+            f"{eval_corpus_ft_teachers_dir}/{{model}}/{{cluster_id}}/{{dataset}}/{{cluster_id}}.{src}",
+            f"{eval_corpus_ft_teachers_dir}/{{model}}/{{cluster_id}}/{{dataset}}/{{cluster_id}}.{trg}"
+        params:
+            dataset_prefix=f"{split_cluster_data_dir}/test/{{dataset}}/{clustered_train_postfix}{{cluster_id}}",
+            res_prefix=f'{eval_corpus_ft_teachers_dir}/{{model}}/{{cluster_id}}/{{dataset}}/{{cluster_id}}',
+            src_lng=src,
+            trg_lng=trg,
+            decoder_config=lambda wildcards: f'{models_dir}/{wildcards.model}/{wildcards.cluster_id}/{best_model}.decoder.yml'
+                            if wildcards.model != 'teacher-domain-ft-ensemble'
+                            else f'{domain_finetuned_teacher_dir}0/{wildcards.cluster_id}/{best_model}.decoder.yml'
+        shell: '''bash pipeline/eval/translate-clustered-subsets-gpu.sh "{params.res_prefix}" "{params.dataset_prefix}" \
+                 {params.src_lng} {params.trg_lng} "{params.decoder_config}" {input.models} >> {log} 2>&1'''
+
+    rule eval_teachers_finetuned_to_cluster:
+        message: "Evaluating a model"
+        log: f"{log_dir}/eval/eval_teachers_finetuned_to_cluster_{{model}}_{{dataset}}.log"
+        conda: "envs/base.yml"
+        threads: 4
+        #group '{model}'
+        priority: 50
+        wildcard_constraints:
+            model="[\w-]+",
+            dataset="|".join(all_eval_datasets),
+            cluster_id="\d+"
+        input:
+            src_data=expand(f"{eval_corpus_ft_teachers_dir}/{{model}}/{{cluster_id}}/{{dataset}}/{{cluster_id}}.{src}",
+                    cluster_id=list(range(num_clusters)), allow_missing=True),
+            trg_data=expand(f"{eval_corpus_ft_teachers_dir}/{{model}}/{{cluster_id}}/{{dataset}}/{{cluster_id}}.{trg}",
+                    cluster_id=list(range(num_clusters)), allow_missing=True),
+            orig_source=f"{orig_cluster_data_dir}/test/{{dataset}}.{src}.gz",
+            orig_ref=f"{orig_cluster_data_dir}/test/{{dataset}}.{trg}.gz"
+        output:
+            report(f'{eval_corpus_ft_teachers_dir}/{{model}}/{{dataset}}.metrics',
+                category='evaluation',subcategory='{model}',caption='reports/evaluation.rst')
+        params:
+            input_prefixes=expand(f"{eval_corpus_ft_teachers_dir}/{{model}}/{{cluster_id}}/{{dataset}}/{{cluster_id}}",
+                    cluster_id=list(range(num_clusters)), allow_missing=True),
+            src_lng=src,
+            trg_lng=trg,
+            res_prefix=f'{eval_corpus_ft_teachers_dir}/{{model}}/{{dataset}}'
+        shell: '''bash pipeline/eval/merge-and-eval-clustered.sh "{params.res_prefix}" "{input.orig_source}" \
+                 "{input.orig_ref}" {params.src_lng} {params.trg_lng} {params.input_prefixes} >> {log} 2>&1'''
