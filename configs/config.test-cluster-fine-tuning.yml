@@ -21,6 +21,10 @@ experiment:
   # "corpus" (fine-tune to each parallel corpus),
   # "cluster" (cluster internal representations of the teacher model and fine-tune to resulting clusters)
   fine-tune-to-domains: cluster
+  # number of the encoder layer from which to extract internal sentence
+  vector-layer-num: 4
+  # number of clusters in k-means models
+  num-clusters: 4
 
   teacher-ensemble: 2
   backward-model: ""

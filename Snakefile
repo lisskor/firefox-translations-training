@@ -127,6 +127,36 @@ vocab_path=vocab_pretrained or f"{models_dir}/vocab/vocab.spm"
 
 domain_finetuned_teacher_dir = f"{models_dir}/teacher-domain-ft"
 
+# clustering params
+try:
+    num_clusters = config['experiment']['num-clusters']
+except KeyError:
+    num_clusters = 8
+
+try:
+    vector_layer_num = config['experiment']['vector-layer-num']
+except KeyError:
+    vector_layer_num = 4
+
+clustering_teacher_id = "0"
+
+cluster_data_dir = f"{data_dir}/clusters/teacher{clustering_teacher_id}"
+orig_cluster_data_dir = f"{cluster_data_dir}/original"
+embedded_cluster_data_dir = f"{cluster_data_dir}/embedded"
+labels_cluster_data_dir = f"{cluster_data_dir}/labels"
+split_cluster_data_dir = f"{cluster_data_dir}/split"
+embedded_source_postfix = "embedded_source.npz"
+cluster_labels_postfix = "cluster_labels.txt"
+cluster_models_dir = f"{models_dir}/clustering/teacher{clustering_teacher_id}"
+clustered_train_postfix = "corpus_cluster"
+# TODO: a better way to do this
+vocab_file_path = vocab_path[:-3] + "vocab"
+hf_model_dir = f"{cluster_models_dir}-huggingface"
+kmeans_model_postfix = "kmeans_model.dump"
+hf_conversion_outputs = ["config.json", "pytorch_model.bin", "special_tokens_map.json",
+                         "tokenizer_config.json", "marian_original_config.json",
+                         "source.spm", "target.spm", "vocab.json"]
+
 #evaluation
 eval_data_dir = f"{original}/eval"
 eval_res_dir = f"{models_dir}/evaluation"
@@ -180,27 +210,6 @@ if fine_tune_mode == "corpus":
     if len(ensemble) > 1:
         results.extend(expand(f'{eval_corpus_ft_teacher_ens_dir}/{{dataset}}/{{eval_dataset}}.metrics',
             eval_dataset=all_eval_datasets, dataset=train_datasets))
-
-# TODO: add this to config
-num_clusters = 4
-clustering_teacher_id = "0"
-
-cluster_data_dir = f"{data_dir}/clusters/teacher{clustering_teacher_id}"
-orig_cluster_data_dir = f"{cluster_data_dir}/original"
-embedded_cluster_data_dir = f"{cluster_data_dir}/embedded"
-labels_cluster_data_dir = f"{cluster_data_dir}/labels"
-split_cluster_data_dir = f"{cluster_data_dir}/split"
-embedded_source_postfix = "embedded_source.npz"
-cluster_labels_postfix = "cluster_labels.txt"
-cluster_models_dir = f"{models_dir}/clustering/teacher{clustering_teacher_id}"
-clustered_train_postfix = "corpus_cluster"
-# TODO: a better way to do this
-vocab_file_path = vocab_path[:-3] + "vocab"
-hf_model_dir = f"{cluster_models_dir}-huggingface"
-kmeans_model_postfix = "kmeans_model.dump"
-hf_conversion_outputs = ["config.json", "pytorch_model.bin", "special_tokens_map.json",
-                         "tokenizer_config.json", "marian_original_config.json",
-                         "source.spm", "target.spm", "vocab.json"]
 
 if fine_tune_mode == "cluster":
     results.extend(expand(f'{domain_finetuned_teacher_dir}{{ens}}/{{dataset}}/{best_model}',
@@ -760,7 +769,7 @@ if fine_tune_mode == "cluster":
         output: f"{embedded_cluster_data_dir}/{{dataset}}/{embedded_source_postfix}"
         params:
             hf_teacher_dir=f"{hf_model_dir}{clustering_teacher_id}",
-            layer_num=2,
+            layer_num=vector_layer_num,
             batch_size=200
         shell: '''bash pipeline/clusters/extract_sentence_representations.sh \
                     "{input.input_data}" "{params.hf_teacher_dir}" "{params.batch_size}" \
