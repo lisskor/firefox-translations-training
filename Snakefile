@@ -152,6 +152,7 @@ clustered_train_postfix = "corpus_cluster"
 # TODO: a better way to do this
 vocab_file_path = vocab_path[:-3] + "vocab"
 hf_model_dir = f"{cluster_models_dir}-huggingface"
+hf_caching_dir = f"{cluster_data_dir}/.hf_cache/datasets"
 kmeans_model_postfix = "kmeans_model.dump"
 hf_conversion_outputs = ["config.json", "pytorch_model.bin", "special_tokens_map.json",
                          "tokenizer_config.json", "marian_original_config.json",
@@ -770,10 +771,11 @@ if fine_tune_mode == "cluster":
         params:
             hf_teacher_dir=f"{hf_model_dir}{clustering_teacher_id}",
             layer_num=vector_layer_num,
-            batch_size=200
+            batch_size=200,
+            hf_caching_dir=hf_caching_dir
         shell: '''bash pipeline/clusters/extract_sentence_representations.sh \
                     "{input.input_data}" "{params.hf_teacher_dir}" "{params.batch_size}" \
-                    "{params.layer_num}" "{output}" >> {log} 2>&1'''
+                    "{params.layer_num}" "{output}" "{params.hf_caching_dir}" >> {log} 2>&1'''
 
     rule corpus_clustering_train:
         message: "Train a k-means model and cluster training data"
